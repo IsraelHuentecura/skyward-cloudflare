@@ -1,0 +1,17 @@
+name = "skyward-compliance-agent"
+main = "src/index.ts"
+compatibility_date = "2024-08-01"
+
+[durable_objects]
+bindings = [
+  { name = "RUN_COORDINATOR", class_name = "RunCoordinator" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RunCoordinator"]
+
+[ai]
+bindings = [
+  { name = "AI" }
+]
