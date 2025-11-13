@@ -30,7 +30,12 @@
             "properties": {
               "documentId": { "type": "string" },
               "reference": { "type": "string" },
-              "sectionText": { "type": "string" }
+              "excerpt": { "type": "string" },
+              "score": { "type": "number" },
+              "attributes": {
+                "type": "object",
+                "additionalProperties": true
+              }
             }
           },
           "rationale": {
