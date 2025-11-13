@@ -1,4 +1,5 @@
 {
+  "extends": "@cloudflare/workers-types/tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

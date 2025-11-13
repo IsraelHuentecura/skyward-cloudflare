@@ -1,7 +1,7 @@
 # ADR 0001: Compliance Q&A Agent Architecture
 
 ## Status
-Superseded by [ADR 0002](./0002-multi-agent-architecture.md)
+Accepted
 
 ## Context
 
@@ -42,22 +42,21 @@ agent run. The Worker entry point will expose two HTTP routes:
 Upon receiving a question the Worker will:
 
 1. Validate the payload against a JSON Schema using `ajv`.
-2. Generate a run identifier (ULID) and create a new record in the Durable
-   Object storage with status `pending`.
+2. Generate a run identifier and create a new record in the Durable Object
+   storage with status `pending`.
 3. Kick off the analysis inside the Durable Object without waiting for its
    completion (`void state.blockConcurrencyWhile`).
 
 Inside the Durable Object we will model the agent run as a pipeline of
 composable services:
 
-- **DocumentRepository** fetches PDF sources from the allowed URLs and caches
-  extracted plain text in the Durable Object storage to avoid repeated work.
-  Extraction uses `pdfjs-dist` which is compatible with the Worker runtime.
-- **SectionIndexer** splits each document into semantic sections and generates
-  embeddings with Workers AI (`@cf/baai/bge-base-en-v1.5`). The embeddings are
-  cached so that future runs can reuse them.
-- **QuestionRouter** selects the most relevant document sections using cosine
-  similarity between the question embedding and the indexed chunks.
+- **AiSearchClient** keeps the authorised documents synchronised with a
+  Cloudflare AI Search (AutoRAG) index. The managed service downloads the PDFs,
+  parses them, and creates embeddings on Cloudflare's infrastructure. We store
+  a fingerprint of the document list so that we only trigger a re-index when the
+  catalogue changes.
+- **AiSearchClient** also runs semantic queries; AI Search returns relevant
+  passages with scores and metadata that we log as part of the reasoning trail.
 - **ComplianceAnalyzer** calls a Workers AI text generation model
   (`@cf/meta/llama-3-8b-instruct`) with a structured prompt that requests
   obligations in JSON form together with rationales and optional target
@@ -84,12 +83,12 @@ future migrations (e.g., to D1 or R2) if we outgrow Durable Objects.
     and simplifying authentication.
   - The modular pipeline allows us to add more tools (e.g., policy matching,
     retrieval plugins) with minimal changes.
-  - Caching extracted text and embeddings inside the Durable Object minimises
-    repeated compute.
+  - AI Search removes the need to bundle PDF parsers or vector stores inside
+    the Worker, while the fingerprint guard prevents unnecessary re-indexes.
 
 - **Cons**
-  - PDF parsing on Workers has CPU costs; large documents may require
-    streaming or offloading to R2 + scheduled preprocessors in the future.
+  - We depend on AI Search; if the API changes the client must be updated
+    quickly (defensive validations are in place to fail fast).
   - Durable Object storage is limited in size; we may need to spill to KV/R2 if
     the number of indexed documents grows substantially.
   - Workers AI model availability can change; we should keep configuration
@@ -106,6 +105,7 @@ future migrations (e.g., to D1 or R2) if we outgrow Durable Objects.
   without additional infrastructure.
 
 - **Pre-extracted text committed to the repository**: rejected to avoid drift
-  between the authoritative legal PDFs and the text used for reasoning. Fetching
-  and caching on-demand keeps the pipeline closer to production expectations.
+  between the authoritative legal PDFs and the text used for reasoning. AI
+  Search already handles parsing and chunking without bringing extra binaries
+  into the Worker bundle.
 

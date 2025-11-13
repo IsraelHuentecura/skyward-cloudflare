@@ -1,16 +1,8 @@
-import type {
-  AgentAnswer,
-  AgentArtifacts,
-  AgentContext,
-  AgentModuleResult,
-  QuestionPayload,
-  ReasoningStep,
-} from "./types";
+import type { AgentAnswer, AgentContext, DocumentMetadata, QuestionPayload, ReasoningStep, SearchResult } from "./types";
 import { ToolRunner } from "./tooling";
-import type { AgentModule } from "./agents/baseAgent";
-import { ChatAgent } from "./agents/chatAgent";
-import { KnowledgeAgent } from "./agents/knowledgeAgent";
-import { ObligationAgent } from "./agents/obligationAgent";
+import { ComplianceAnalyzer } from "./complianceAnalyzer";
+import { DOCUMENTS } from "../config/documents";
+import { AiSearchClient } from "./aiSearchClient";
 
 export interface AgentRunResult {
   answer: AgentAnswer;
@@ -24,54 +16,52 @@ export async function executeAgentRun(
 ): Promise<AgentRunResult> {
   const reasoning: ReasoningStep[] = [];
   const toolRunner = new ToolRunner();
-  const artifacts: AgentArtifacts = {};
+  const analyzer = new ComplianceAnalyzer(context.env.AI);
+  const indexName = context.env.AI_SEARCH_INDEX ?? "compliance-autorag";
+  const searchClient = new AiSearchClient(context.env.AI, context.storage, indexName, DOCUMENTS);
 
   reasoning.push({
     stage: "question",
     summary: "Pregunta recibida",
-    details: { question: payload.question, targets: payload.targets, metadata: payload.metadata },
+    details: { question: payload.question, targets: payload.targets },
     timestamp: new Date().toISOString(),
   });
 
-  const agents: AgentModule[] = [
-    new ChatAgent({ context, tools: toolRunner }),
-    new KnowledgeAgent({ context, tools: toolRunner }),
-    new ObligationAgent({ context, tools: toolRunner }),
-  ];
+  const documents: DocumentMetadata[] = DOCUMENTS;
 
-  for (const agent of agents) {
-    const result = await runAgent(agent, payload, artifacts);
-    reasoning.push(result.reasoning);
-    if (result.artifacts) {
-      Object.assign(artifacts, result.artifacts);
-    }
-    if (result.reasoning.stage.endsWith("-error")) {
-      break;
-    }
-  }
+  await searchClient.ensureIndex(toolRunner);
 
-  const answer: AgentAnswer =
-    artifacts.answer ?? ({ summary: "No se pudo generar una respuesta", obligations: [] } satisfies AgentAnswer);
+  reasoning.push({
+    stage: "index-sync",
+    summary: "Índice IA Search sincronizado",
+    details: { index: indexName, documents: documents.map((doc) => doc.id) },
+    timestamp: new Date().toISOString(),
+  });
+
+  const results: SearchResult[] = await searchClient.query(payload.question, toolRunner, 8);
+  const topResults = results.slice(0, 6);
+
+  reasoning.push({
+    stage: "retrieval",
+    summary: "Se consultó IA Search y se seleccionaron los resultados más relevantes",
+    details: {
+      selected: topResults.map((result) => ({
+        documentId: result.documentId,
+        score: result.score,
+        reference: result.reference,
+      })),
+    },
+    timestamp: new Date().toISOString(),
+  });
+
+  const answer = await analyzer.analyze(payload, topResults, toolRunner);
+
+  reasoning.push({
+    stage: "analysis",
+    summary: "El modelo generó obligaciones y resumen",
+    details: { obligationCount: answer.obligations.length },
+    timestamp: new Date().toISOString(),
+  });
 
   return { answer, reasoning, toolRunner };
-}
-
-async function runAgent(
-  agent: AgentModule,
-  payload: QuestionPayload,
-  artifacts: AgentArtifacts
-): Promise<AgentModuleResult> {
-  try {
-    return await agent.run(payload, artifacts);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      reasoning: {
-        stage: `${agent.name}-error`,
-        summary: `El agente ${agent.name} falló`,
-        details: { message },
-        timestamp: new Date().toISOString(),
-      },
-    };
-  }
 }

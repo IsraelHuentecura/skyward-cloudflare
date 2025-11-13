@@ -15,3 +15,6 @@ new_classes = ["RunCoordinator"]
 bindings = [
   { name = "AI" }
 ]
+
+[vars]
+AI_SEARCH_INDEX = "compliance-autorag"
