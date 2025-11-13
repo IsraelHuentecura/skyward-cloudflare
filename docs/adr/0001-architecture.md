@@ -1,7 +1,7 @@
 # ADR 0001: Compliance Q&A Agent Architecture
 
 ## Status
-Accepted
+Superseded by [ADR 0002](./0002-multi-agent-architecture.md)
 
 ## Context
 

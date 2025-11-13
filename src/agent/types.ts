@@ -28,7 +28,9 @@ export interface Obligation {
   source: {
     documentId: string;
     reference: string;
-    sectionText?: string;
+    score?: number;
+    attributes?: Record<string, unknown>;
+    excerpt?: string;
   };
   rationale: string;
   actions?: string[];
@@ -67,35 +69,44 @@ export interface QuestionPayload {
   metadata?: Record<string, unknown>;
 }
 
-export interface DocumentMetadata {
-  id: string;
-  title: string;
-  url: string;
-  language: string;
-  topics: string[];
-}
-
-export interface DocumentRecord {
-  metadata: DocumentMetadata;
-  text: string;
-}
-
-export interface DocumentChunk {
-  id: string;
-  documentId: string;
-  position: number;
-  text: string;
-  heading?: string;
-  embedding: number[];
-}
-
-export interface RankedChunk extends DocumentChunk {
-  score: number;
-}
-
 export interface AgentContext {
   env: Env;
   storage: DurableObjectStorage;
+}
+
+export interface StructuredQuestion {
+  normalizedQuestion: string;
+  summary: string;
+  focusAreas: string[];
+  assumptions: string[];
+  plan: string[];
+}
+
+export interface RetrievalChunk {
+  id: string;
+  documentId: string;
+  title: string;
+  excerpt: string;
+  score: number;
+  attributes?: Record<string, unknown>;
+}
+
+export interface RetrievalResult {
+  query: string;
+  model?: string;
+  reranker?: string;
+  chunks: RetrievalChunk[];
+}
+
+export interface AgentArtifacts {
+  structuredQuestion?: StructuredQuestion;
+  retrieval?: RetrievalResult;
+  answer?: AgentAnswer;
+}
+
+export interface AgentModuleResult {
+  artifacts?: Partial<AgentArtifacts>;
+  reasoning: ReasoningStep;
 }
 
 import type { Env } from "../env";

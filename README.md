@@ -1,75 +1,91 @@
 # Skyward Compliance Agent
 
-> Agente de preguntas y respuestas sobre cumplimiento normativo chileno ejecutado en Cloudflare Workers.
+> API de cumplimiento modular basada en múltiples agentes que aprovecha Cloudflare AI Search y Workers AI.
 
-## Visión General
+## Visión general
 
-Este proyecto implementa un servicio HTTP que orquesta un agente asíncrono para leer,
-indexar y razonar sobre un conjunto curado de leyes chilenas. El agente se apoya en:
+Este repositorio implementa una API HTTP que coordina agentes especializados para responder
+preguntas de cumplimiento normativo sobre leyes chilenas. La solución está pensada como un
+laboratorio para el desafío de Skyward y prioriza la claridad arquitectónica por sobre una
+implementación completa.
 
-- **Cloudflare Workers** para exponer una API ligera y escalable.
-- **Durable Objects** para coordinar ejecuciones largas sin depender del ciclo de vida
-  de la petición HTTP inicial.
-- **Workers AI** para generar embeddings semánticos (BGE Base) y razonar con un modelo
-  de lenguaje (Llama 3 8B Instruct).
-- **pdf.js** para extraer texto directamente desde los PDF publicados por los organismos
-  chilenos (se usan únicamente los enlaces entregados en el desafío).
+Componentes principales:
 
-El pipeline aplica principios SOLID mediante clases especializadas por responsabilidad:
-repositorio de documentos, indexador, ruteador de preguntas, analizador de cumplimiento y
-capas de métricas/herramientas.
+- **Cloudflare Workers** expone la API y actúa como orquestador sin servidor.
+- **Durable Objects** persisten el estado de cada ejecución (`RunCoordinator`) y permiten
+  asincronía: un análisis puede tomar minutos y sobrevivir a desconexiones del cliente.
+- **Cloudflare AI Search** (binding `env.AI`) centraliza la indexación de los PDFs entregados,
+  maneja chunking, ranking y reranking (`aiSearch`/`search`).
+- **Workers AI** proporciona modelos de lenguaje para razonar y producir salidas estructuradas.
+- **Agentes colaborativos** (`ChatAgent`, `KnowledgeAgent`, `ObligationAgent`) encapsulan cada
+  responsabilidad y comparten telemetría a través de un `ToolRunner`.
 
-## Arquitectura
+La arquitectura está documentada en el ADR [`docs/adr/0002-multi-agent-architecture.md`](docs/adr/0002-multi-agent-architecture.md).
 
-El flujo de trabajo está documentado en el ADR [`docs/adr/0001-architecture.md`](docs/adr/0001-architecture.md).
-En resumen:
+## Estructura del repositorio
 
-1. `POST /question` valida la solicitud con JSON Schema y crea un identificador ULID.
-2. El Worker inicializa un `RunCoordinator` (Durable Object) que persiste el estado y lanza
-   la ejecución en segundo plano.
-3. El DO descarga los PDF, extrae texto, genera embeddings y selecciona los fragmentos más
-   relevantes mediante similaridad coseno.
-4. El analizador arma un prompt estructurado y consulta a Workers AI para obtener un JSON
-   con obligaciones, mapeos a objetivos y racionales.
-5. `GET /runs/:id` devuelve el estado de la ejecución (pendiente, corriendo, completada o
-   fallida) junto con la respuesta, métricas y trazas de razonamiento.
+```
+├── docs/adr/                    # Registro de decisiones arquitectónicas
+├── schemas/                     # Esquemas JSON de entrada/salida
+├── src/
+│   ├── agent/
+│   │   ├── agents/              # Agentes especializados (chat, knowledge, obligation)
+│   │   ├── pipeline.ts          # Orquestador multi-agente
+│   │   ├── tooling.ts           # Métricas de herramientas
+│   │   └── types.ts             # Tipos compartidos
+│   ├── config/
+│   │   └── aiSearch.ts          # Configuración del binding AI Search
+│   ├── env.d.ts                 # Tipado de bindings del Worker
+│   └── index.ts                 # Punto de entrada HTTP y Durable Object
+├── package.json
+└── wrangler.toml
+```
 
-## Requisitos Previos
+## Configuración previa
 
-- Node.js 20+
-- `pnpm`, `npm` o `yarn` (se usa `npm` en los ejemplos)
-- Cuenta de Cloudflare con acceso a Workers, Durable Objects y Workers AI
-- `wrangler` autenticado (`npx wrangler login`)
-
-## Configuración
-
-Instale dependencias:
+1. **Provisionar AI Search**
+   - Crear una instancia de AI Search desde el dashboard (`Compute & AI` → `AI Search`).
+   - Ingestar los PDFs entregados mediante la fuente *Website* o mediante carga directa.
+   - Registrar el nombre del índice (por ejemplo, `compliance-chile`).
+2. **Configurar el binding de Workers AI**
+   - En `wrangler.toml` ya existe la sección `[ai]` con `binding = "AI"`.
+   - Ajustar `src/config/aiSearch.ts` para utilizar el identificador de AI Search y modelos deseados.
+3. **Instalar dependencias**
 
 ```bash
 npm install
 ```
 
-Cree un archivo `.dev.vars` (opcional) si desea sobreescribir configuraciones locales.
-Para producción no es necesario; Workers AI se autentica automáticamente.
+4. **Autenticarse con Cloudflare**
+
+```bash
+npx wrangler login
+```
+
+Para ejecutar la indexación y búsquedas reales se recomienda usar `wrangler dev --remote`, ya que
+las bindings de AI Search no están disponibles en el runtime de Miniflare.
 
 ## Ejecución en modo desarrollo
 
 ```bash
-npm run dev
+npm run dev -- --remote
 ```
 
-`wrangler` levantará un entorno local (Miniflare) con Durable Objects. Durante el primer
-run el agente descargará y procesará los PDF. Dependiendo de la red y los modelos
-seleccionados el proceso puede tardar varios minutos.
+`wrangler` desplegará el Worker en un entorno remoto de Cloudflare y expondrá la API en
+`https://<subdominio>.workers.dev` o en `127.0.0.1:8787` mediante `--remote`. Cada solicitud crea
+una ejecución asincrónica almacenada en el Durable Object correspondiente.
 
-### Disparar una pregunta
+## Uso de la API
+
+### Crear una ejecución
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8787/question \
   -H 'content-type: application/json' \
   -d '{
-        "question": "Si tengo una empresa de software medioambiental para salmoneras, en el sur de Chile, ¿cómo cumplo con la ley de protección de datos personales?",
-        "targets": ["Plataforma SaaS", "Operaciones en terreno"]
+        "question": "Si tengo una empresa de software medioambiental para salmoneras en el sur de Chile, ¿cómo cumplo con la ley de protección de datos personales?",
+        "targets": ["Plataforma SaaS", "Operaciones en terreno"],
+        "metadata": { "sector": "salmonicultura" }
       }'
 ```
 
@@ -77,18 +93,40 @@ Respuesta esperada:
 
 ```json
 {
-  "runId": "01J123456789ABCDEFXYZ"
+  "runId": "<identificador>"
 }
 ```
 
-### Consultar el estado de la ejecución
+### Consultar el estado
 
 ```bash
-curl -sS http://127.0.0.1:8787/runs/01J123456789ABCDEFXYZ
+curl -sS http://127.0.0.1:8787/runs/<identificador>
 ```
 
-La respuesta incluirá el estado, la salida del agente, las métricas de herramientas y los
-pasos de razonamiento.
+El payload incluye:
+
+- `status`: `pending` | `running` | `completed` | `failed`.
+- `answer`: resumen, obligaciones, asignaciones a objetivos y disclaimers.
+- `reasoning`: etapas registradas por cada agente (recepción, análisis de pregunta, retrieval,
+  generación de obligaciones, errores si los hubiera).
+- `metrics`: latencia total y lista de herramientas utilizadas (modelo usado, instancia de AI Search,
+  éxito o error, timestamps).
+
+## Cómo funciona el pipeline
+
+1. **ChatAgent** normaliza la pregunta usando un modelo conversacional de Workers AI y genera un
+   plan de investigación.
+2. **KnowledgeAgent** consulta `env.AI.autorag(<instance>).aiSearch()` siguiendo la documentación de
+   Cloudflare AI Search (reescritura de consulta, `ranking_options.score_threshold`, reranking con
+   `@cf/baai/bge-reranker-base`, filtros opcionales a partir de `metadata`).
+3. **ObligationAgent** combina el plan y los fragmentos recuperados para pedir a un modelo de
+   lenguaje que entregue un JSON válido. La respuesta se valida con
+   [`schemas/agent-output.schema.json`](schemas/agent-output.schema.json) antes de almacenarse.
+4. El `ToolRunner` registra cada invocación (`chat-agent`, `ai-search`, `obligation-agent`) con
+   latencia, éxito y metadatos. Estos datos terminan en `run.metrics.toolCalls`.
+
+Si un agente falla, se documenta el error en `reasoning` y el pipeline se detiene, dejando un
+mensaje de fallback en la respuesta.
 
 ## Despliegue
 
@@ -96,33 +134,35 @@ pasos de razonamiento.
 npm run deploy
 ```
 
-El despliegue registrará la Durable Object `RunCoordinator` y expondrá la API en la URL
-asignada por Cloudflare.
+El comando registrará la Durable Object `RunCoordinator` (ver sección `[migrations]` en
+`wrangler.toml`) y expondrá la API en el subdominio de Workers configurado.
 
 ## Esquemas JSON
 
-- [`schemas/question-request.schema.json`](schemas/question-request.schema.json):
-  valida la forma de las preguntas recibidas.
-- [`schemas/agent-output.schema.json`](schemas/agent-output.schema.json):
-  asegura que la respuesta del modelo cumpla con la estructura esperada.
+- [`schemas/question-request.schema.json`](schemas/question-request.schema.json) valida la entrada
+de `POST /question` mediante `ajv`.
+- [`schemas/agent-output.schema.json`](schemas/agent-output.schema.json) se utiliza dentro de
+  `ObligationAgent` para validar la respuesta del modelo.
 
-## Métricas y Observabilidad
+## Observabilidad y métricas
 
-Cada herramienta que el agente invoca reporta latencia, éxito o error y metadatos. Estos
-registros se incluyen en `run.metrics.toolCalls`. Además, `run.reasoning` documenta las
-etapas clave del pipeline para facilitar auditorías.
+Cada paso agrega un `ReasoningStep` con `stage`, `summary`, `details` y `timestamp`. Las métricas de
+herramientas incluyen el modelo usado, éxito/fracaso, latencia y metadatos específicos (por ejemplo
+la instancia de AI Search consultada). Esto facilita auditar el comportamiento del sistema y medir
+costos.
 
-## Limitaciones y Trabajo Futuro
+## Limitaciones conocidas
 
-- El parsing de PDF se ejecuta on-demand dentro del Worker. Para documentos más extensos se
-  recomienda procesarlos previamente y almacenarlos en R2/KV.
-- Workers AI puede evolucionar o cambiar modelos; los identificadores se centralizan en
-  `ComplianceAnalyzer` y `SectionIndexer` para facilitar sustituciones.
-- El matching de objetivos usa solamente razonamiento del LLM. En futuras iteraciones se
-  puede incorporar una capa simbólica o reglas específicas por industria.
+- Se asume que la indexación de los PDFs está disponible en AI Search; este proyecto no cubre el
+  pipeline de ingestión.
+- Los modelos configurados (`@cf/meta/llama-3.1-8b-instruct*`, `@cf/meta/llama-3.3-70b-instruct-fp8-fast`)
+  pueden variar según disponibilidad. Ajuste `src/config/aiSearch.ts` y las constantes de los agentes
+  si se requieren alternativas.
+- Para pruebas locales sin acceso a AI Search se deben mockear los bindings (no incluidos).
 
-## Referencias
+## Recursos
 
 - [Cloudflare Workers](https://developers.cloudflare.com/workers/)
+- [Cloudflare AI Search](https://developers.cloudflare.com/ai-search/usage/workers-binding/)
 - [Workers AI](https://developers.cloudflare.com/workers-ai/)
 - [Durable Objects](https://developers.cloudflare.com/durable-objects/)
